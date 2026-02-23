@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>伐採届出 QAアシスタント</title>
+    <style>
+        /* 全体のシンプルなデザイン */
+        body {
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            background-color: #f4f7f6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            background-color: #fff;
+            padding: 25px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        h1 {
+            font-size: 1.4em;
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #27ae60;
+            padding-bottom: 10px;
+        }
+        .input-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            font-weight: bold;
+            margin-bottom: 8px;
+            color: #2c3e50;
+        }
+        input[type="password"], textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box;
+            font-size: 1em;
+        }
+        textarea {
+            resize: vertical;
+            height: 100px;
+        }
+        .note {
+            font-size: 0.8em;
+            color: #7f8c8d;
+            margin-top: 5px;
+        }
+        button {
+            background-color: #27ae60;
+            color: white;
+            border: none;
+            padding: 14px 20px;
+            font-size: 1.1em;
+            font-weight: bold;
+            border-radius: 4px;
+            cursor: pointer;
+            width: 100%;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #219150;
+        }
+        button:disabled {
+            background-color: #95a5a6;
+            cursor: not-allowed;
+        }
+        #loading {
+            display: none;
+            text-align: center;
+            color: #27ae60;
+            font-weight: bold;
+            margin-top: 15px;
+        }
+        #result-area {
+            display: none;
+            margin-top: 25px;
+            padding: 20px;
+            background-color: #e8f8f5;
+            border-left: 5px solid #1abc9c;
+            border-radius: 4px;
+            white-space: pre-wrap; /* 改行をそのまま表示 */
+            line-height: 1.6;
+        }
+        .disclaimer {
+            font-size: 0.85em;
+            color: #e74c3c;
+            margin-top: 20px;
+            text-align: center;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>🌲 伐採届出 QAアシスタント</h1>
+
+    <div class="input-group">
+        <label for="apiKey">Gemini APIキー</label>
+        <input type="password" id="apiKey" placeholder="AI Studioで取得したAPIキーを入力">
+        <div class="note">※一度入力するとブラウザに保存されます。</div>
+    </div>
+
+    <div class="input-group">
+        <label for="question">ご質問内容</label>
+        <textarea id="question" placeholder="例：間伐でも届出は必要ですか？"></textarea>
+    </div>
+
+    <button id="submitBtn" onclick="askAI()">AIに質問する</button>
+
+    <div id="loading">回答を生成中... 少々お待ちください。</div>
+
+    <div id="result-area"></div>
+
+    <div class="disclaimer">
+        ※本AIは林野庁の公開資料に基づいて回答しますが、最終的な判断・手続きについては必ず市町村の林務担当窓口へご確認ください。
+    </div>
+</div>
+
+<script>
+    // ページ読み込み時に、保存されたAPIキーがあれば復元する
+    window.onload = function() {
+        const savedKey = localStorage.getItem('gemini_api_key_forestry');
+        if (savedKey) {
+            document.getElementById('apiKey').value = savedKey;
+        }
+    };
+
+    async function askAI() {
+        const apiKey = document.getElementById('apiKey').value.trim();
+        const question = document.getElementById('question').value.trim();
+        const submitBtn = document.getElementById('submitBtn');
+        const loading = document.getElementById('loading');
+        const resultArea = document.getElementById('result-area');
+
+        // 入力チェック
+        if (!apiKey) {
+            alert("APIキーを入力してください。");
+            return;
+        }
+        if (!question) {
+            alert("質問内容を入力してください。");
+            return;
+        }
+
+        // APIキーをローカルストレージに保存
+        localStorage.setItem('gemini_api_key_forestry', apiKey);
+
+        // UIの状態を「通信中」に変更
+        submitBtn.disabled = true;
+        loading.style.display = 'block';
+        resultArea.style.display = 'none';
+        resultArea.innerText = '';
+
+        try {
+            // 1. GitHubからルール（マークダウン）を読み込む
+            const mdUrl = 'https://raw.githubusercontent.com/takada291/QA-forestry-rules001/refs/heads/main/rules001.md';
+            const mdResponse = await fetch(mdUrl);
+            if (!mdResponse.ok) throw new Error("ルールファイルの読み込みに失敗しました。");
+            const ruleText = await mdResponse.text();
+
+            // 2. システム指示を構築
+            const systemInstruction = `
+あなたは林野庁の伐採届出に関する優秀な行政アシスタントです。
+以下の【マニュアル】の内容のみを情報源として、ユーザーの質問に正確に答えてください。
+
+【厳守するルール】
+- 【マニュアル】に記載されている事実のみを回答すること。
+- 【マニュアル】に記載がない場合、絶対に推測や一般論で回答せず、「提供されたマニュアルには記載がないため、市町村の担当窓口にご確認ください」と回答すること。
+- 回答は分かりやすく、丁寧なトーンで行うこと。
+
+【マニュアル】
+${ruleText}
+`;
+
+            // 3. Gemini API (v1beta) へリクエストを送信
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+            const requestBody = {
+                system_instruction: { parts: [{ text: systemInstruction }] },
+                contents: [{ parts: [{ text: question }] }]
+            };
+
+            const apiResponse = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody)
+            });
+
+            if (!apiResponse.ok) {
+                const errorData = await apiResponse.json();
+                throw new Error("APIエラー: " + (errorData.error?.message || "不明なエラー"));
+            }
+
+            const data = await apiResponse.json();
+
+            // 4. 回答を表示
+            if (data.candidates && data.candidates.length > 0) {
+                const answer = data.candidates[0].content.parts[0].text;
+                resultArea.innerText = answer;
+                resultArea.style.display = 'block';
+            } else {
+                throw new Error("APIから有効な回答が返ってきませんでした。");
+            }
+
+        } catch (error) {
+            console.error(error);
+            alert("エラーが発生しました: " + error.message);
+        } finally {
+            // UIの状態を元に戻す
+            submitBtn.disabled = false;
+            loading.style.display = 'none';
+        }
+    }
+</script>
+
+</body>
+</html>
