@@ -162,24 +162,40 @@
         resultArea.innerText = '';
 
         try {
-            // 1. GitHubからルール（マークダウン）を読み込む
-            const mdUrl = 'https://raw.githubusercontent.com/takada291/QA-forestry-rules001/refs/heads/main/rules001.md';
-            const mdResponse = await fetch(mdUrl);
-            if (!mdResponse.ok) throw new Error("ルールファイルの読み込みに失敗しました。");
-            const ruleText = await mdResponse.text();
+            // 1. GitHubから2つのルール（マークダウン）を読み込む
+            // ★注意：以下のファイル名の部分を、実際の名前に書き換えてください！
+            const mdUrl1 = 'https://raw.githubusercontent.com/takada291/QA-forestry-rules001/refs/heads/main/rules001-001.md';
+            const mdUrl2 = 'https://raw.githubusercontent.com/takada291/QA-forestry-rules001/refs/heads/main/rules001-002.md';
 
-            // 2. システム指示を構築
+            // 2つのファイルを並列で同時に読み込む
+            const [mdResponse1, mdResponse2] = await Promise.all([
+                fetch(mdUrl1),
+                fetch(mdUrl2)
+            ]);
+
+            if (!mdResponse1.ok || !mdResponse2.ok) {
+                throw new Error("ルールファイルの読み込みに失敗しました。ファイル名が間違っていないか確認してください。");
+            }
+
+            const ruleText1 = await mdResponse1.text();
+            const ruleText2 = await mdResponse2.text();
+
+            // 2. システム指示を構築（2つのマニュアルを合体）
             const systemInstruction = `
 あなたは林野庁の伐採届出に関する優秀な行政アシスタントです。
-以下の【マニュアル】の内容のみを情報源として、ユーザーの質問に正確に答えてください。
+以下の【基本マニュアル】と【詳細Q&A・例外ルール】の内容のみを情報源として、ユーザーの質問に正確に答えてください。
 
 【厳守するルール】
-- 【マニュアル】に記載されている事実のみを回答すること。
-- 【マニュアル】に記載がない場合、絶対に推測や一般論で回答せず、「提供されたマニュアルには記載がないため、市町村の担当窓口にご確認ください」と回答すること。
+- 提供された資料に記載されている事実のみを回答すること。
+- 資料に記載がない場合、絶対に推測や一般論で回答せず、「提供されたマニュアルには記載がないため、市町村の担当窓口にご確認ください」と回答すること。
+- 保安林や林地開発など、伐採届以外の制度が絡む例外ケースについては特に注意深く資料を確認すること。
 - 回答は分かりやすく、丁寧なトーンで行うこと。
 
-【マニュアル】
-${ruleText}
+【基本マニュアル】
+${ruleText1}
+
+【詳細Q&A・例外ルール】
+${ruleText2}
 `;
 
             // 3. Gemini API (v1beta) へリクエストを送信
