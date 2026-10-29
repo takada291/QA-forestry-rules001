@@ -18,6 +18,7 @@
     </script>
     
     <style>
+        /* 全体のシンプルなデザイン */
         body {
             font-family: 'Helvetica Neue', Arial, sans-serif;
             background-color: #f4f7f6;
@@ -85,6 +86,21 @@
             background-color: #95a5a6;
             cursor: not-allowed;
         }
+        
+        /* 読み込み中のスピナーアニメーション */
+        .loader {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #27ae60;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
         #result-area {
             display: none;
             margin-top: 25px;
@@ -93,6 +109,7 @@
             border-left: 5px solid #1abc9c;
             border-radius: 4px;
             line-height: 1.6;
+            overflow-wrap: break-word; /* テキストのはみ出し防止 */
         }
         .model-badge {
             display: inline-block; padding: 2px 8px; font-size: 11px; font-weight: bold;
@@ -105,16 +122,18 @@
             text-align: center;
             font-weight: bold;
         }
+        
         /* AIの回答内のマークダウン装飾 */
-        #result-area h1, #result-area h2, #result-area h3 { color: #1b5e20; margin-top: 15px; margin-bottom: 5px; }
+        #result-area h1, #result-area h2, #result-area h3 { color: #1b5e20; margin-top: 15px; margin-bottom: 5px; font-size: 1.2em; }
         #result-area p { margin-top: 0; margin-bottom: 10px; }
         #result-area ul { margin-top: 0; padding-left: 20px; }
+        #result-area strong { color: #2c3e50; } 
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h1>🌲 伐採届出 QAアシスタント v2.0</h1>
+    <h1>🌲 伐採届出 QAアシスタント v2.1</h1>
 
     <div class="input-group">
         <label for="apiKey">Gemini APIキー</label>
@@ -143,6 +162,12 @@
         if (savedKey) {
             document.getElementById('apiKey').value = savedKey;
         }
+        
+        // marked.js のオプション設定（改行を反映）
+        marked.setOptions({
+            breaks: true,
+            gfm: true
+        });
     };
 
     // ==========================================
@@ -237,6 +262,7 @@
         let activeModel = "準備中";
         const updateTimerUI = () => {
             resultArea.innerHTML = `<div style="text-align:center; padding: 20px; font-weight:bold; color:#27ae60;">
+                <div class="loader"></div>
                 🤖 モデル [${activeModel}] でマニュアルを検索中...<br>
                 <span style="font-size:12px; color:#666;">（経過時間: ${sec}秒）</span>
             </div>`;
@@ -245,7 +271,7 @@
         const timerId = setInterval(() => { sec++; updateTimerUI(); }, 1000);
 
         try {
-            // 1. GitHubからルールを読み込む
+            // 1. GitHubから2つのルール（マークダウン）を読み込む
             const mdUrl1 = 'https://raw.githubusercontent.com/takada291/QA-forestry-rules001/refs/heads/main/rules001-001.md';
             const mdUrl2 = 'https://raw.githubusercontent.com/takada291/QA-forestry-rules001/refs/heads/main/rules001-002.md';
 
@@ -279,10 +305,13 @@ ${ruleText1}
 ${ruleText2}
 `;
 
-            // 3. APIリクエスト用ペイロード
+            // 3. APIリクエスト用ペイロード（ここでトークン上限を設定して途切れを防止）
             const requestBody = {
                 system_instruction: { parts: [{ text: systemInstruction }] },
-                contents: [{ parts: [{ text: question }] }]
+                contents: [{ parts: [{ text: question }] }],
+                generationConfig: {
+                    maxOutputTokens: 8192
+                }
             };
 
             // 4. API通信実行（フォールバック付き）
