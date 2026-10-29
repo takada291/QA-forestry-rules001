@@ -5,18 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>伐採届出 QAアシスタント</title>
     
+    <!-- Markdown描画用 -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- Google Analytics -->
     <script async src="https://www.googletagmanager.com/gtag/js?id=G-WXBP6CPKLP"></script>
     <script>
       window.dataLayer = window.dataLayer || [];
       function gtag(){dataLayer.push(arguments);}
       gtag('js', new Date());
-
-      // ここも測定IDに書き換えます
       gtag('config', 'G-WXBP6CPKLP');
     </script>
     
     <style>
-        /* 全体のシンプルなデザイン */
         body {
             font-family: 'Helvetica Neue', Arial, sans-serif;
             background-color: #f4f7f6;
@@ -84,13 +85,6 @@
             background-color: #95a5a6;
             cursor: not-allowed;
         }
-        #loading {
-            display: none;
-            text-align: center;
-            color: #27ae60;
-            font-weight: bold;
-            margin-top: 15px;
-        }
         #result-area {
             display: none;
             margin-top: 25px;
@@ -98,8 +92,11 @@
             background-color: #e8f8f5;
             border-left: 5px solid #1abc9c;
             border-radius: 4px;
-            white-space: pre-wrap; /* 改行をそのまま表示 */
             line-height: 1.6;
+        }
+        .model-badge {
+            display: inline-block; padding: 2px 8px; font-size: 11px; font-weight: bold;
+            color: #fff; background-color: #27ae60; border-radius: 4px; margin-bottom: 12px;
         }
         .disclaimer {
             font-size: 0.85em;
@@ -108,12 +105,16 @@
             text-align: center;
             font-weight: bold;
         }
+        /* AIの回答内のマークダウン装飾 */
+        #result-area h1, #result-area h2, #result-area h3 { color: #1b5e20; margin-top: 15px; margin-bottom: 5px; }
+        #result-area p { margin-top: 0; margin-bottom: 10px; }
+        #result-area ul { margin-top: 0; padding-left: 20px; }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h1>🌲 伐採届出 QAアシスタント v1.0</h1>
+    <h1>🌲 伐採届出 QAアシスタント v2.0</h1>
 
     <div class="input-group">
         <label for="apiKey">Gemini APIキー</label>
@@ -128,8 +129,6 @@
 
     <button id="submitBtn" onclick="askAI()">AIに質問する</button>
 
-    <div id="loading">回答を生成中... 少々お待ちください。</div>
-
     <div id="result-area"></div>
 
     <div class="disclaimer">
@@ -138,7 +137,7 @@
 </div>
 
 <script>
-    // ページ読み込み時に、保存されたAPIキーがあれば復元する
+    // ページ読み込み時に、保存されたAPIキーを復元
     window.onload = function() {
         const savedKey = localStorage.getItem('gemini_api_key_forestry');
         if (savedKey) {
@@ -146,11 +145,75 @@
         }
     };
 
+    // ==========================================
+    // AI通信処理 (フォールバック・タイムアウト実装)
+    // ==========================================
+    const MODEL_CANDIDATES = ["gemini-3.6-flash", "gemini-2.5-flash"];
+
+    async function fetchWithTimeout(url, options, timeoutMs = 45000) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try { return await fetch(url, { ...options, signal: controller.signal }); } 
+        finally { clearTimeout(timer); }
+    }
+
+    async function callGeminiWithFallback(apiKey, basePayload, onStatusUpdate) {
+        let lastErrorMsg = "";
+        for (const modelName of MODEL_CANDIDATES) {
+            if (onStatusUpdate) onStatusUpdate(modelName);
+            const isGemini3 = modelName.startsWith("gemini-3");
+            const payloadWithThinking = JSON.parse(JSON.stringify(basePayload));
+            
+            // v3系特有の設定
+            if (isGemini3) {
+                payloadWithThinking.generationConfig = {
+                    ...(payloadWithThinking.generationConfig || {}),
+                    thinkingConfig: { thinkingLevel: "LOW" }
+                };
+            }
+
+            try {
+                let response = await fetchWithTimeout(
+                    `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
+                    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payloadWithThinking) },
+                    45000
+                );
+                let data = await response.json();
+
+                // v3特有のエラー時のフォールバック処理
+                if (data.error && response.status === 400 && isGemini3) {
+                    response = await fetchWithTimeout(
+                        `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
+                        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(basePayload) },
+                        45000
+                    );
+                    data = await response.json();
+                }
+
+                if (data.error) {
+                    lastErrorMsg = `[${modelName}] ${data.error.message}`;
+                    continue;
+                }
+                
+                if (data.candidates && data.candidates[0] && data.candidates[0].content) {
+                    const parts = data.candidates[0].content.parts || [];
+                    const answerPart = parts.find(p => typeof p.text === 'string' && !p.thought) || parts.find(p => typeof p.text === 'string');
+                    if (answerPart) { return { text: answerPart.text, usedModel: modelName }; }
+                }
+            } catch (err) {
+                lastErrorMsg = `[${modelName}] ${err.name === 'AbortError' ? 'タイムアウト(45秒超過)' : err.message}`;
+            }
+        }
+        throw new Error(lastErrorMsg || "AIモデルでの通信に失敗しました。APIキーや利用制限をご確認ください。");
+    }
+
+    // ==========================================
+    // メインの質問処理
+    // ==========================================
     async function askAI() {
         const apiKey = document.getElementById('apiKey').value.trim();
         const question = document.getElementById('question').value.trim();
         const submitBtn = document.getElementById('submitBtn');
-        const loading = document.getElementById('loading');
         const resultArea = document.getElementById('result-area');
 
         // 入力チェック
@@ -163,22 +226,29 @@
             return;
         }
 
-        // APIキーをローカルストレージに保存
+        // APIキー保存
         localStorage.setItem('gemini_api_key_forestry', apiKey);
 
-        // UIの状態を「通信中」に変更
+        // UIの状態を変更
         submitBtn.disabled = true;
-        loading.style.display = 'block';
-        resultArea.style.display = 'none';
-        resultArea.innerText = '';
+        resultArea.style.display = 'block';
+        
+        let sec = 0;
+        let activeModel = "準備中";
+        const updateTimerUI = () => {
+            resultArea.innerHTML = `<div style="text-align:center; padding: 20px; font-weight:bold; color:#27ae60;">
+                🤖 モデル [${activeModel}] でマニュアルを検索中...<br>
+                <span style="font-size:12px; color:#666;">（経過時間: ${sec}秒）</span>
+            </div>`;
+        };
+        updateTimerUI();
+        const timerId = setInterval(() => { sec++; updateTimerUI(); }, 1000);
 
         try {
-            // 1. GitHubから2つのルール（マークダウン）を読み込む
-            // ★注意：以下のファイル名の部分を、実際の名前に書き換えてください！
+            // 1. GitHubからルールを読み込む
             const mdUrl1 = 'https://raw.githubusercontent.com/takada291/QA-forestry-rules001/refs/heads/main/rules001-001.md';
             const mdUrl2 = 'https://raw.githubusercontent.com/takada291/QA-forestry-rules001/refs/heads/main/rules001-002.md';
 
-            // 2つのファイルを並列で同時に読み込む
             const [mdResponse1, mdResponse2] = await Promise.all([
                 fetch(mdUrl1),
                 fetch(mdUrl2)
@@ -191,7 +261,7 @@
             const ruleText1 = await mdResponse1.text();
             const ruleText2 = await mdResponse2.text();
 
-            // 2. システム指示を構築（2つのマニュアルを合体）
+            // 2. システム指示を構築
             const systemInstruction = `
 あなたは林野庁の伐採届出に関する優秀な行政アシスタントです。
 以下の【基本マニュアル】と【詳細Q&A・例外ルール】の内容のみを情報源として、ユーザーの質問に正確に答えてください。
@@ -209,46 +279,33 @@ ${ruleText1}
 ${ruleText2}
 `;
 
-            // 3. Gemini API (v1beta) へリクエストを送信
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+            // 3. APIリクエスト用ペイロード
             const requestBody = {
                 system_instruction: { parts: [{ text: systemInstruction }] },
                 contents: [{ parts: [{ text: question }] }]
             };
 
-            const apiResponse = await fetch(apiUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(requestBody)
+            // 4. API通信実行（フォールバック付き）
+            const result = await callGeminiWithFallback(apiKey, requestBody, (m) => {
+                activeModel = m;
+                updateTimerUI();
             });
 
-            if (!apiResponse.ok) {
-                const errorData = await apiResponse.json();
-                throw new Error("APIエラー: " + (errorData.error?.message || "不明なエラー"));
-            }
-
-            const data = await apiResponse.json();
-
-            // 4. 回答を表示
-            if (data.candidates && data.candidates.length > 0) {
-                const answer = data.candidates[0].content.parts[0].text;
-                resultArea.innerText = answer;
-                resultArea.style.display = 'block';
-            } else {
-                throw new Error("APIから有効な回答が返ってきませんでした。");
-            }
+            // 5. 成功時の画面描画 (marked.jsでマークダウンをHTMLに変換)
+            resultArea.innerHTML = `
+                <span class="model-badge">使用モデル: ${result.usedModel}</span>
+                <div>${marked.parse(result.text)}</div>
+            `;
 
         } catch (error) {
             console.error(error);
-            alert("エラーが発生しました: " + error.message);
+            resultArea.innerHTML = `<div style="color: #e74c3c; font-weight: bold;">エラーが発生しました: ${error.message}</div>`;
         } finally {
-            // UIの状態を元に戻す
+            clearInterval(timerId);
             submitBtn.disabled = false;
-            loading.style.display = 'none';
         }
     }
 </script>
 
 </body>
 </html>
-
