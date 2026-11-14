@@ -50,13 +50,15 @@
             margin-bottom: 8px;
             color: #2c3e50;
         }
-        input[type="password"], textarea {
+        input[type="password"], select, textarea {
             width: 100%;
             padding: 12px;
             border: 1px solid #ccc;
             border-radius: 4px;
             box-sizing: border-box;
             font-size: 1em;
+            font-family: inherit;
+            background-color: #fff;
         }
         textarea {
             resize: vertical;
@@ -133,16 +135,25 @@
 <body>
 
 <div class="container">
-    <h1>🌲 伐採届出 QAアシスタント v2.1</h1>
+    <h1>🌲 伐採届出 QAアシスタント v2.2</h1>
 
     <div class="input-group">
-        <label for="apiKey">Gemini APIキー</label>
+        <label for="apiKey">🔑 Gemini APIキー</label>
         <input type="password" id="apiKey" placeholder="AI Studioで取得したAPIキーを入力">
-        <div class="note">※一度入力するとブラウザに保存されます。</div>
+        <div class="note">※一度入力するとブラウザに保存され、他アプリとも共有されます。</div>
     </div>
 
     <div class="input-group">
-        <label for="question">ご質問内容</label>
+        <label for="thinkingLevelSelect">🧠 思考レベル</label>
+        <select id="thinkingLevelSelect">
+            <option value="LOW">Low (高速・省エネ)</option>
+            <option value="MEDIUM" selected>Medium (推奨バランス)</option>
+            <option value="HIGH">High (高精度・標準)</option>
+        </select>
+    </div>
+
+    <div class="input-group">
+        <label for="question">💬 ご質問内容</label>
         <textarea id="question" placeholder="例：間伐でも届出は必要ですか？"></textarea>
     </div>
 
@@ -156,9 +167,9 @@
 </div>
 
 <script>
-    // ページ読み込み時に、保存されたAPIキーを復元
+    // ページ読み込み時に、保存されたAPIキーを復元（別アプリのキーとも互換性を確保）
     window.onload = function() {
-        const savedKey = localStorage.getItem('gemini_api_key_forestry');
+        const savedKey = localStorage.getItem('gemini_api_key_forestry') || localStorage.getItem('gemini_api_key_forest');
         if (savedKey) {
             document.getElementById('apiKey').value = savedKey;
         }
@@ -171,9 +182,9 @@
     };
 
     // ==========================================
-    // AI通信処理 (フォールバック・タイムアウト実装)
+    // AI通信処理 (Hydrogen優先・フォールバック・タイムアウト実装)
     // ==========================================
-    const MODEL_CANDIDATES = ["gemini-3.8-flash", "gemini-3.6-flash"];
+    const MODEL_CANDIDATES = ["gemini-4-hydrogen", "gemini-3.8-flash", "gemini-2.5-flash"];
 
     async function fetchWithTimeout(url, options, timeoutMs = 45000) {
         const controller = new AbortController();
@@ -184,16 +195,18 @@
 
     async function callGeminiWithFallback(apiKey, basePayload, onStatusUpdate) {
         let lastErrorMsg = "";
+        const selectedThinkingLevel = document.getElementById('thinkingLevelSelect')?.value || "MEDIUM";
+
         for (const modelName of MODEL_CANDIDATES) {
-            if (onStatusUpdate) onStatusUpdate(modelName);
-            const isGemini3 = modelName.startsWith("gemini-3");
+            if (onStatusUpdate) onStatusUpdate(`${modelName} (${selectedThinkingLevel})`);
+            const supportsThinking = modelName.startsWith("gemini-4") || modelName.startsWith("gemini-3");
             const payloadWithThinking = JSON.parse(JSON.stringify(basePayload));
             
-            // v3系特有の設定
-            if (isGemini3) {
+            // v4 / v3系特有の設定
+            if (supportsThinking) {
                 payloadWithThinking.generationConfig = {
                     ...(payloadWithThinking.generationConfig || {}),
-                    thinkingConfig: { thinkingLevel: "LOW" }
+                    thinkingConfig: { thinkingLevel: selectedThinkingLevel }
                 };
             }
 
@@ -205,8 +218,8 @@
                 );
                 let data = await response.json();
 
-                // v3特有のエラー時のフォールバック処理
-                if (data.error && response.status === 400 && isGemini3) {
+                // 思考パラメータ非対応等で400エラーが返った場合のフォールバック処理
+                if (data.error && response.status === 400 && supportsThinking) {
                     response = await fetchWithTimeout(
                         `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
                         { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(basePayload) },
@@ -223,7 +236,9 @@
                 if (data.candidates && data.candidates[0] && data.candidates[0].content) {
                     const parts = data.candidates[0].content.parts || [];
                     const answerPart = parts.find(p => typeof p.text === 'string' && !p.thought) || parts.find(p => typeof p.text === 'string');
-                    if (answerPart) { return { text: answerPart.text, usedModel: modelName }; }
+                    if (answerPart) {
+                        return { text: answerPart.text, usedModel: `${modelName} [思考:${selectedThinkingLevel}]` };
+                    }
                 }
             } catch (err) {
                 lastErrorMsg = `[${modelName}] ${err.name === 'AbortError' ? 'タイムアウト(45秒超過)' : err.message}`;
@@ -251,8 +266,9 @@
             return;
         }
 
-        // APIキー保存
+        // APIキー保存（両方のキー名で保存し、別アプリとも共有）
         localStorage.setItem('gemini_api_key_forestry', apiKey);
+        localStorage.setItem('gemini_api_key_forest', apiKey);
 
         // UIの状態を変更
         submitBtn.disabled = true;
@@ -305,7 +321,7 @@ ${ruleText1}
 ${ruleText2}
 `;
 
-            // 3. APIリクエスト用ペイロード（ここでトークン上限を設定して途切れを防止）
+            // 3. APIリクエスト用ペイロード（トークン上限を設定して途切れを防止）
             const requestBody = {
                 system_instruction: { parts: [{ text: systemInstruction }] },
                 contents: [{ parts: [{ text: question }] }],
